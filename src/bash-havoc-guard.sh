@@ -29,8 +29,11 @@
 # Try it without installing anything:
 #   bash src/bash-havoc-guard.sh --explain 'cat ~/.ssh/id_rsa'
 #
-# Three settings below are marked `# EDIT`: your safe rm roots, extra credential
-# paths, and your local network ranges. The defaults are sensible.
+# Five settings below are marked `# EDIT`: extra credential paths, the words that
+# make a filename look like a credential, the commands that count as content
+# dumpers, your local network ranges, and your safe rm roots. Each one is a bash
+# array of named alternatives, so tuning a lock is adding a line rather than
+# editing a long regex. The defaults are sensible.
 
 set -u
 
@@ -92,6 +95,20 @@ strip_launchers() {
           s/^["'\'']+//' <<<"$1"
 }
 
+# The tunable settings below are written as arrays of named alternatives and joined
+# into one ERE here, so editing a setting means adding a line, not surgery on a
+# 700-character regex. printf, not echo: echo interprets backslashes on some shells
+# and every pattern here carries them. The result is fed to `grep -Eq`, never to
+# bash's [[ =~ ]] - on the bash 3.2 that macOS ships, \b is inert inside [[ =~ ]]
+# while grep -E honours it, so that swap would silently disarm every \b pattern.
+join_alts() {
+  local out="" a
+  for a in "$@"; do
+    if [ -z "$out" ]; then out="$a"; else out="$out|$a"; fi
+  done
+  printf '%s' "$out"
+}
+
 # harmless null-redirects must not read as paths or writes
 STRIPPED=$(sed -E 's/[0-9]*>{1,2}[[:space:]]*(\/dev\/null|&[0-9])//g' <<<"$CMD")
 
@@ -112,16 +129,47 @@ STRIPPED=$(sed -E 's/[0-9]*>{1,2}[[:space:]]*(\/dev\/null|&[0-9])//g' <<<"$CMD")
 # `cat src/tokens.json` and `cat docs/design-tokens.md` - design-system files, not
 # credentials. A guard that blocks a designer's own token file every morning gets
 # uninstalled by lunch, so CRED_WORD now yields on source and doc files.
-# EDIT: add any credential paths specific to your setup to CRED_HARD.
-CRED_HARD='(^|[[:space:]"'\''/=@])\.(ssh|aws|kube|netrc|pgpass)(/|\b)|\.config/(gcloud|rclone|gh|anthropic)\b|Library/Keychains|id_rsa|id_ed25519|\.credentials\.json|\.(pem|key|p12|pfx)([[:space:]]|$|["'\''])|(^|[[:space:]"'\''/=@])\.env(\.[A-Za-z0-9_.-]+)?($|[[:space:]"'\''])'
-CRED_WORD='[^[:space:]"'\'']*/[A-Za-z0-9_.-]*(token|secret|apikey|api_key)[A-Za-z0-9_.-]*([[:space:]]|$|["'\''])|(^|[[:space:]"'\''=@])[.~][A-Za-z0-9_.~-]*(token|secret|apikey|api_key)[A-Za-z0-9_.-]*([[:space:]]|$|["'\''])|[A-Za-z0-9_-]*(token|secret|apikey|api_key)[A-Za-z0-9_-]*\.[A-Za-z0-9]+([[:space:]]|$|["'\''])'
+# EDIT: add any credential paths specific to your setup to CRED_HARD_ALTS.
+# One alternative per line. A trailing group like ([[:space:]]|$|["']) is how a
+# pattern says "the path ends here": these are matched against command SEGMENTS,
+# not bare paths, so `cat prod.pem | base64` has an operand after the path and a
+# bare $ anchor would miss it.
+CRED_HARD_ALTS=(
+  '(^|[[:space:]"'\''/=@])\.(ssh|aws|kube|netrc|pgpass)(/|\b)'  # ~/.ssh ~/.aws ~/.kube ~/.netrc ~/.pgpass
+  '\.config/(gcloud|rclone|gh|anthropic)\b'                     # cloud + agent CLI token stores
+  'Library/Keychains'                                           # the macOS keychain
+  'id_rsa'                                                      # private keys by conventional name
+  'id_ed25519'
+  '\.credentials\.json'                                         # the Claude Code OAuth store
+  '\.(pem|key|p12|pfx)([[:space:]]|$|["'\''])'                  # key + certificate extensions
+  '(^|[[:space:]"'\''/=@])\.env(\.[A-Za-z0-9_.-]+)?($|[[:space:]"'\''])'  # .env and .env.<suffix>
+)
+CRED_HARD=$(join_alts "${CRED_HARD_ALTS[@]}")
+
+# EDIT: the words that make a FILENAME look like a credential store. Spliced into
+# each alternative below, so a new word is one edit and not three.
+CRED_WORDS=(token secret apikey api_key)
+CRED_WORD_GROUP="($(join_alts "${CRED_WORDS[@]}"))"
+CRED_WORD_ALTS=(
+  '[^[:space:]"'\'']*/[A-Za-z0-9_.-]*'"$CRED_WORD_GROUP"'[A-Za-z0-9_.-]*([[:space:]]|$|["'\''])'      # any path whose FILENAME carries the word
+  '(^|[[:space:]"'\''=@])[.~][A-Za-z0-9_.~-]*'"$CRED_WORD_GROUP"'[A-Za-z0-9_.-]*([[:space:]]|$|["'\''])'  # a dotfile or ~-path carrying it
+  '[A-Za-z0-9_-]*'"$CRED_WORD_GROUP"'[A-Za-z0-9_-]*\.[A-Za-z0-9]+([[:space:]]|$|["'\''])'             # a bare filename.ext carrying it
+)
+CRED_WORD=$(join_alts "${CRED_WORD_ALTS[@]}")
 CRED="$CRED_HARD|$CRED_WORD"
 # a source or doc file is not a credential store, whatever it is called
-BENIGN_EXT='\.(md|markdown|mdx|rst|adoc|ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|php|css|scss|sass|less|styl|html|vue|svelte|astro)$'
+BENIGN_EXTS=(md markdown mdx rst adoc ts tsx js jsx mjs cjs py rb go rs java kt swift
+             c h cc cpp hpp cs php css scss sass less styl html vue svelte astro)
+BENIGN_EXT='\.('"$(join_alts "${BENIGN_EXTS[@]}")"')$'
 # Ambiguous extensions yield ONLY under an obvious source directory. `.txt`, `.sh`
 # and `.sql` are the shapes a naive credential file actually takes - api_token.txt
 # and secrets.sh are stores, while docs/tokens.txt and scripts/tokens.sh are not.
-BENIGN_SRC='(^|/)(src|source|docs?|app|apps|components?|styles?|lib|libs|tests?|specs?|scripts?|examples?|packages|design|stories|fixtures)/[^[:space:]]*\.(json|ya?ml|toml|xml|csv|txt|sql|sh|bash|zsh|lock)$'
+# These two anchor on $ legitimately: unlike the patterns above they are tested
+# against a single OPERAND, not a whole segment.
+BENIGN_SRC_DIRS=(src source 'docs?' app apps 'components?' 'styles?' lib libs 'tests?'
+                 'specs?' 'scripts?' 'examples?' packages design stories fixtures)
+BENIGN_SRC_EXTS=(json 'ya?ml' toml xml csv txt sql sh bash zsh lock)
+BENIGN_SRC='(^|/)('"$(join_alts "${BENIGN_SRC_DIRS[@]}")"')/[^[:space:]]*\.('"$(join_alts "${BENIGN_SRC_EXTS[@]}")"')$'
 
 # Case-insensitive: a store called API_KEY or Secret.conf is a store. This was only
 # safe to tighten once CRED_WORD had the benign tier under it - matching TOKEN as
@@ -146,7 +194,17 @@ is_cred_operand() {
 
 # gh is authenticated, so `gh gist create <secret>` is a one-command exfil primitive
 # that no cred-path filter would see; it is handled in the EGRESS lock below.
-DUMPERS='\b(cat|head|tail|less|more|strings|xxd|od|hexdump|base64|openssl|cut|awk|sed|sort|rev|tac|nl|paste|column|grep|egrep|fgrep|rg|ag|ack|cp|mv|ditto|tar|zip|gzip|bzip2|rsync|scp|dd|install|tee|source|gh|python[0-9.]*|ruby|perl|node|php)\b|(^|[;&|][[:space:]]*)\.[[:space:]]'
+# EDIT: anything that can put a file's CONTENT somewhere. Safe inspection (ls, wc,
+# file, stat, shasum) is deliberately absent. \b is why this is grep -E and not
+# bash's [[ =~ ]]: macOS bash 3.2 treats \b as inert there, which would match `cat`
+# inside `catx` and inside every word containing a command name.
+DUMPER_CMDS=(cat head tail less more strings xxd od hexdump base64 openssl
+             cut awk sed sort rev tac nl paste column
+             grep egrep fgrep rg ag ack
+             cp mv ditto tar zip gzip bzip2 rsync scp dd install tee
+             source gh 'python[0-9.]*' ruby perl node php)
+# the second alternative is `. file`, which sources it; a leading `.` has no \b
+DUMPERS='\b('"$(join_alts "${DUMPER_CMDS[@]}")"')\b|(^|[;&|][[:space:]]*)\.[[:space:]]'
 while IFS= read -r seg; do
   [ -n "$seg" ] || continue
   grep -Eqi "$CRED" <<<"$seg" || continue
@@ -174,7 +232,14 @@ done < <(split_segments "$STRIPPED")
 # Anchored to the WHOLE host, and to a dot boundary for the suffixes. An unanchored
 # allow-list is the same bug as the `curl -A localhost` incident one layer down:
 # localhost.evil.example contains "localhost" and is not local.
-LOCALOK='^(localhost|127\.0\.0\.1|::1|0\.0\.0\.0)$|(^|\.)(ts\.net|local)$|^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}$'
+# These DO anchor on ^ and $: each is tested against a single parsed HOST, not a
+# command segment, so the whole string has to be the local destination.
+LOCALOK_ALTS=(
+  '^(localhost|127\.0\.0\.1|::1|0\.0\.0\.0)$'                                  # loopback, whole host only
+  '(^|\.)(ts\.net|local)$'                                                     # *.ts.net and *.local, on a dot boundary
+  '^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}$'      # Tailscale CGNAT 100.64/10
+)
+LOCALOK=$(join_alts "${LOCALOK_ALTS[@]}")
 
 # A network binary only counts in COMMAND position. Matching it anywhere blocked
 # `grep -rn curl scripts/` and `echo 'RUN curl https://x' > Dockerfile`, where the

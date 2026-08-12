@@ -201,5 +201,19 @@ allow "diskutil list"                     "diskutil list"
 allow "diskutil info"                     "diskutil info /dev/disk0"
 allow "chmod -R on a build dir"           "chmod -R 755 ./build"
 
+
+echo "== block: a credential path is not always the LAST thing on the line =="
+# Every other secrets case in this suite puts the path at the end of the command, so a
+# pattern anchored with a bare $ passes all of them while leaking any command that has
+# an operand, a pipe, or a redirect after the path. The suite shipped green over exactly
+# that defect once; these are the cases that catch it.
+block "cred path then a pipe"             "cat prod.pem | base64"
+block "cred path then a redirect"         "cat deploy.key > /tmp/out"
+block "cred path then a chained command"  "cat ~/.ssh/id_rsa && echo done"
+block "cred path as a middle operand"     "cp ~/.aws/credentials /tmp/stash"
+block "cred path before other flags"      "tar czf out.tgz secrets.pem --exclude x"
+block "env file then a pipe"              "cat .env | grep -v PASSWORD"
+allow "a source file then a pipe"         "cat src/tokens.json | jq ."
+
 echo "test-bash-havoc-guard: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

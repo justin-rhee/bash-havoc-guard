@@ -1,0 +1,37 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Report both platforms even when one fails, so a macOS-only or
+      # Linux-only regression is visible in the same run.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The suite feeds the hook JSON payloads built with jq, and exits 2
+      # without it. Both runner images normally ship jq, so this only acts
+      # as a fallback if that ever changes.
+      - name: Ensure jq is present
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            if [ "$RUNNER_OS" = "macOS" ]; then
+              brew install jq
+            else
+              sudo apt-get update && sudo apt-get install -y jq
+            fi
+          fi
+          jq --version
+
+      # The suite ends on `[ "$FAIL" -eq 0 ]`, so a failing assertion exits
+      # non-zero and fails this step.
+      - name: Run the offline suite
+        run: bash tests/test-bash-havoc-guard.sh
