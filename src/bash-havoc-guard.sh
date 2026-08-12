@@ -82,6 +82,16 @@ split_segments() { sed -E 's/\$\(/\n/g; s/[`()]/\n/g' <<<"$1" | tr '|;&' '\n'; }
 # known gap: a quoted "my file.txt" splits into two tokens.
 tokens() { tr ' \t' '\n' <<<"$1" | sed -E 's/^["'\'']+//; s/["'\'']+$//' | grep -v '^$'; }
 
+# Peel launchers off the front of a segment so the real command lands in first position.
+# A dangerous binary hiding behind sudo/xargs/eval is still that binary; used by BOTH the
+# egress and destruction locks, which is why it lives here and not inline.
+strip_launchers() {
+  sed -E 's/^[[:space:]]*//;
+          s/^((sudo|env|time|timeout|nohup|command|exec|xargs|eval|stdbuf|nice|ionice)([[:space:]]+(-[^[:space:]]+|[0-9.]+[smhd]?))*[[:space:]]+)*//;
+          s/^((bash|sh|zsh|ksh)[[:space:]]+-c[[:space:]]+)//;
+          s/^["'\'']+//' <<<"$1"
+}
+
 # harmless null-redirects must not read as paths or writes
 STRIPPED=$(sed -E 's/[0-9]*>{1,2}[[:space:]]*(\/dev\/null|&[0-9])//g' <<<"$CMD")
 
@@ -172,10 +182,7 @@ LOCALOK='^(localhost|127\.0\.0\.1|::1|0\.0\.0\.0)$|(^|\.)(ts\.net|local)$|^100\.
 while IFS= read -r seg; do
   [ -n "$seg" ] || continue
   # a network binary hiding behind a launcher is still a network binary
-  s=$(sed -E 's/^[[:space:]]*//;
-              s/^((sudo|env|time|timeout|nohup|command|exec|xargs|eval|stdbuf|nice|ionice)([[:space:]]+(-[^[:space:]]+|[0-9.]+[smhd]?))*[[:space:]]+)*//;
-              s/^((bash|sh|zsh|ksh)[[:space:]]+-c[[:space:]]+)//;
-              s/^["'\'']+//' <<<"$seg")
+  s=$(strip_launchers "$seg")
   first=${s%%[[:space:]]*}
   first=${first##*/}
 
@@ -296,22 +303,56 @@ while IFS= read -r seg; do
     deny "destruction" "recursive rm with an unresolvable target (command substitution or piped input)"
 done < <(split_segments "$STRIPPED")
 
-if grep -Eq '\bdd\b[^|;&]*\bof=/dev/' <<<"$CMD"; then deny "destruction" "raw device write via dd"; fi
-if grep -Eq '\bdiskutil\b[^|;&]*\b(erase[A-Za-z]*|reformat|partitionDisk|zeroDisk)\b' <<<"$CMD"; then deny "destruction" "diskutil erase-class command"; fi
-if grep -Eq '\bmkfs' <<<"$CMD"; then deny "destruction" "mkfs"; fi
-if grep -Eq '\bgit\b[^|;&]*\bpush\b[^|;&]*[[:space:]](-f|--force(-with-lease)?)\b' <<<"$CMD"; then deny "destruction" "git force-push"; fi
-# git clean discards untracked files with no reflog to recover them - same family as rm
-if grep -Eq '\bgit\b[^|;&]*\bclean\b[^|;&]*[[:space:]](-[a-zA-Z]*f|--force)' <<<"$CMD"; then deny "destruction" "git clean (irreversibly discards untracked files)"; fi
-# chmod -R on / or $HOME is not recoverable: sudo and sshd both refuse to run against
-# world-writable paths. Same shape as the rm rule, so it reuses the same targets.
-if grep -Eq '\bchmod\b[^|;&]*[[:space:]]-[a-zA-Z]*R' <<<"$STRIPPED"; then
-  while IFS= read -r tok; do
-    case "$tok" in -*) continue ;; esac
-    case "$(expand_home "$tok")" in
-      /|"$HOME"|"$HOME"/|'/*'|"$HOME/*") deny "destruction" "recursive chmod of / or \$HOME: $tok" ;;
-    esac
-  done < <(tokens "$STRIPPED")
-fi
+# The remaining destruction checks match in COMMAND POSITION, the same way the network
+# binaries do. Matching them anywhere in the command string meant that naming one was
+# treated as running one: `git commit -m "anchor mkfs to command position"` was blocked by
+# the mkfs rule, and `echo "run diskutil eraseDisk"` by the diskutil rule. A guard that
+# refuses to let you WRITE ABOUT a dangerous command trains you to work around it, which
+# costs more than the rule earns.
+while IFS= read -r seg; do
+  [ -n "$seg" ] || continue
+  s=$(strip_launchers "$seg")
+  first=${s%%[[:space:]]*}
+  first=${first##*/}
+  case "$first" in
+    dd)
+      grep -Eq '[[:space:]]of=/dev/' <<<"$s" && deny "destruction" "raw device write via dd" ;;
+    diskutil)
+      grep -Eq '\b(erase[A-Za-z]*|reformat|partitionDisk|zeroDisk)\b' <<<"$s" &&
+        deny "destruction" "diskutil erase-class command" ;;
+    mkfs|mkfs.*)
+      deny "destruction" "mkfs" ;;
+    chmod)
+      # chmod -R on / or $HOME is not recoverable: sudo and sshd both refuse to run
+      # against world-writable paths. Same shape as the rm rule, so it reuses its targets.
+      if grep -Eq '[[:space:]]-[a-zA-Z]*R' <<<"$s"; then
+        while IFS= read -r tok; do
+          case "$tok" in -*) continue ;; esac
+          case "$(expand_home "$tok")" in
+            /|"$HOME"|"$HOME"/|'/*'|"$HOME/*")
+              deny "destruction" "recursive chmod of / or \$HOME: $tok" ;;
+          esac
+        done < <(tokens "$s")
+      fi ;;
+    git)
+      # Command position is not enough for git: the dangerous part is the SUBCOMMAND, and
+      # a message can carry another subcommand's name. `git commit -m "block git clean
+      # -xfd"` matched the clean rule until the subcommand was isolated. Strip git's own
+      # global options first, so `git -C path push --force` still resolves to push.
+      sub=$(sed -E 's/^git[[:space:]]+//;
+                    s/^((-[cC][[:space:]]+[^[:space:]]+|--(git-dir|work-tree|namespace)=[^[:space:]]+|--(no-pager|bare|paginate|literal-pathspecs))[[:space:]]+)*//' <<<"$s")
+      subcmd=${sub%%[[:space:]]*}
+      case "$subcmd" in
+        push)
+          grep -Eq '[[:space:]](-f|--force(-with-lease)?)([[:space:]]|$)' <<<"$sub" &&
+            deny "destruction" "git force-push" ;;
+        clean)
+          # git clean discards untracked files with no reflog to recover them, same family as rm
+          grep -Eq '[[:space:]](-[a-zA-Z]*f[a-zA-Z]*|--force)([[:space:]]|$)' <<<"$sub" &&
+            deny "destruction" "git clean (irreversibly discards untracked files)" ;;
+      esac ;;
+  esac
+done < <(split_segments "$STRIPPED")
 
 [ "$EXPLAIN" -eq 1 ] && echo "allowed"
 exit 0

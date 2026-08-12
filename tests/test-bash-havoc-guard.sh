@@ -167,5 +167,39 @@ block "git clean --force -d"              "git clean --force -d"
 block "git clean -d --force"              "git clean -d --force"
 allow "git clean --dry-run"               "git clean -n"
 
+
+echo "== allow: naming a dangerous command is not running it =="
+# Matching these anywhere in the command string meant that writing ABOUT a command was
+# treated as running it. A guard that refuses to let you describe a danger trains you to
+# work around it, which costs more than the rule earns.
+allow "commit message naming mkfs"        "git commit -m 'anchor mkfs to command position'"
+allow "echo naming diskutil"              "echo 'run diskutil eraseDisk to wipe'"
+allow "grep for dd in scripts"            "grep -rn 'dd if=' scripts/"
+allow "commit message naming git clean"   "git commit -m 'block git clean -xfd'"
+allow "commit message naming force push"  "git commit -m 'never force push to main'"
+allow "doc write naming mkfs"             "printf '%s' 'never run mkfs' > NOTES.md"
+
+echo "== block: the same commands in command position =="
+block "mkfs"                              "mkfs /dev/disk2"
+block "mkfs.ext4 variant"                 "mkfs.ext4 /dev/sda1"
+block "mkfs behind sudo"                  "sudo mkfs.ext4 /dev/sda1"
+block "mkfs after a semicolon"            "cd /tmp; mkfs /dev/disk2"
+block "dd behind sudo"                    "sudo dd if=/dev/zero of=/dev/disk2"
+block "dd in a subshell"                  "(dd if=/dev/zero of=/dev/disk2)"
+
+echo "== block: git is judged on its SUBCOMMAND, not the whole string =="
+block "git -C path push force"            "git -C /repo push --force origin main"
+block "git --no-pager clean -fd"          "git --no-pager clean -fd"
+block "git push force-with-lease"         "git push --force-with-lease origin main"
+allow "git clean --dry-run"               "git clean -n"
+allow "git clean -d without force"        "git clean -d"
+allow "git log with an f format"          "git log --format=%f"
+
+echo "== allow: the non-destructive members of the same binaries =="
+allow "dd file to file"                   "dd if=in.img of=out.img"
+allow "diskutil list"                     "diskutil list"
+allow "diskutil info"                     "diskutil info /dev/disk0"
+allow "chmod -R on a build dir"           "chmod -R 755 ./build"
+
 echo "test-bash-havoc-guard: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

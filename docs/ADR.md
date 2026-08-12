@@ -98,3 +98,33 @@ The lesson is about sequence rather than regex. The tests were written after the
 so they could only encode the blind spots already known, and a suite can be green over
 a hole its author never thought to look for. The sixty-command corpus that found these
 is now part of the suite, and it goes first next time.
+
+## 5. Writing about a dangerous command is not running one
+
+The network binaries were anchored to command position early, because `grep -rn curl
+scripts/` has to stay open. The destruction checks never got the same treatment, and it
+showed the moment the guard was pointed at its own development: a commit message reading
+`anchor mkfs to command position` was refused by the mkfs rule, and a heredoc that merely
+mentioned a command was refused too. During one session this guard blocked four of the
+commands being used to improve it, including the commit that fixed the false positive it
+was firing on.
+
+That is not a cosmetic problem. A control that stops you describing a danger teaches you
+to route around the control, and the routing becomes habit long before the next real
+catch. So `mkfs`, `dd`, `diskutil`, `chmod` and `git` are now resolved in command
+position through the same launcher-stripping path the network binaries use, which also
+means a dangerous binary hiding behind `sudo` or `xargs` is still caught.
+
+Anchoring to command position turned out to be necessary and not sufficient. `git commit
+-m "block git clean -xfd"` has `git` in command position, so it still matched the clean
+rule on the message text. For a multiplexer like git the real unit is the SUBCOMMAND, and
+finding it means stripping git's own global options first so that `git -C path push
+--force` still resolves to push. The general form of the lesson: anchoring is only as
+good as your model of where the command actually begins, and for any tool that dispatches
+to subcommands, the binary name is one level too shallow.
+
+One case is deliberately left open. A heredoc body line that begins with a dangerous word
+is indistinguishable from a command without parsing heredocs, and the guard reads a
+command string rather than a shell syntax tree. Skipping heredoc bodies wholesale would
+be wrong too, since `bash <<EOF` executes them. The README says so plainly, and
+`--explain` will name the lock and the operand so an over-block is easy to recognise.
