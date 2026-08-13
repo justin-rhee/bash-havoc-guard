@@ -20,9 +20,9 @@ Claude Code can run a script before each command and let it veto. This is that s
 
 There are three checks:
 
-- **Reading secrets.** Blocks a command that would dump the contents of a credential file. Looking at one is still fine, so you can list the folder, check the size, or take a fingerprint of the file without ever printing what's inside it.
-- **Sending things out.** Blocks a network command unless it's pointed somewhere on your own machine or network. Ordinary `git` and `gh` work normally, except for the handful of commands that publish a file or create a new place to publish to.
-- **Destroying things.** Blocks a recursive delete outside the folders you've said are fine, anything that writes straight to a disk, a disk wipe, `git clean`, and a force push.
+- reading secrets: blocks a command that would dump the contents of a credential file, and still lets you list the folder, check the size, or take a fingerprint without ever printing what's inside
+- sending things out: blocks a network command unless it's pointed somewhere on your own machine or network, leaving ordinary `git` and `gh` alone except the handful of commands that publish a file or create a new place to publish to
+- destroying things: blocks a recursive delete outside the folders you've said are fine, anything that writes straight to a disk, a disk wipe, `git clean`, and a force push
 
 It fails open. Feed it something it can't parse and it allows the command rather than blocking. A guard that jams the session shut the first time it hits an edge case is one you rip out that afternoon, and then you have no guard at all.
 
@@ -95,10 +95,11 @@ It won't stop someone who is genuinely trying to get around it. Anyone can encod
 
 It works from a list of dangerous shapes it recognises, so something genuinely new gets through. And it only watches shell commands. Anything else your agent can do is outside what this sees.
 
-It also goes too far in two places, and both are on purpose:
+It also goes too far in two places, and both are on purpose.
 
-- `rm -rf $(pwd)` is blocked while `rm -rf $DIR` is allowed. When the target of a delete is computed on the spot, the guard never sees what's about to be deleted, and an unknown recursive delete is the last thing that should get a pass. A variable at least leaves something to look at, and that case belongs to the sandbox layer.
-- If you write a dangerous-looking line into a file, it still blocks. Saving the text `curl https://example.com` into a document trips the network check on a line that never runs. Telling those apart properly means understanding shell syntax rather than reading the command as text, and ignoring anything that looks like a document would be wrong the other way, because you can pipe a document straight into a shell.
+`rm -rf $(pwd)` is blocked while `rm -rf $DIR` is allowed. When the target of a delete is computed on the spot, the guard never sees what's about to be deleted, and an unknown recursive delete is the last thing that should get a pass. A variable at least leaves something to look at, and that case belongs to the sandbox layer.
+
+If you write a dangerous-looking line into a file, it still blocks. Saving the text `curl https://example.com` into a document trips the network check on a line that never runs. Telling those apart properly means understanding shell syntax rather than reading the command as text, and ignoring anything that looks like a document would be wrong the other way, because you can pipe a document straight into a shell.
 
 When something blocks and you think it shouldn't have, ask it why:
 
