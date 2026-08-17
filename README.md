@@ -2,31 +2,27 @@
 
 [![test](https://github.com/justin-rhee/bash-havoc-guard/actions/workflows/test.yml/badge.svg)](https://github.com/justin-rhee/bash-havoc-guard/actions/workflows/test.yml)
 
-A hook that reads every shell command your AI agent is about to run, and stops the dangerous ones.
+My agent could print my GitHub token with one command and publish any file on my machine with one more.
 
-## Why I built it
+The guard I'd already written stopped neither. I found out by aiming a second agent at it with instructions to break through, and it did, twice, both times with commands I'd never thought to watch.
 
-My agent could print my GitHub token with one command, and publish any file on my machine to a public web page with one more. I found that out from someone I had asked to try breaking the guard I'd already written.
+This hook is what survived that review. It reads every shell command your AI agent is about to run and stops the dangerous ones.
 
-If you let an agent run shell commands, you have this too, whether or not anything has gone wrong yet. Nothing sits between the agent deciding to run something and it running. If it decides to read the file holding your API keys, it reads it. If it decides to delete a folder, the folder is gone.
+## Use it if
 
-So I wrote a small script to sit in the middle and refuse the obvious things. Then I asked someone to get past it, and they did, twice. `cat ~/.config/gh/hosts.yml` prints the GitHub token store, and my script had never heard of that file. `gh gist create` takes any file you point it at and publishes it, in one command, and my script was only watching for things that looked like downloads.
-
-This is what came out of fixing those, and then having someone break it again.
+You run a Claude Code agent that executes shell commands, especially unattended or in a loop, and you want a cheap guardrail against it reading a secret, shipping data off the machine, or running something destructive. It sits in front of an OS sandbox, not instead of one.
 
 ## How it works
 
-Claude Code can run a script before each command and let it veto. This is that script. It gets the command as text, decides, and either stays quiet or refuses with a reason.
-
-There are three checks:
+Claude Code can run a script before each command and let it veto. This is that script: it gets the command as text and either stays quiet or refuses with a reason. Three checks.
 
 - reading secrets: blocks a command that would dump the contents of a credential file, and still lets you list the folder, check the size, or take a fingerprint without ever printing what's inside
 - sending things out: blocks a network command unless it's pointed somewhere on your own machine or network, leaving ordinary `git` and `gh` alone except the handful of commands that publish a file or create a new place to publish to
 - destroying things: blocks a recursive delete outside the folders you've said are fine, anything that writes straight to a disk, a disk wipe, `git clean`, and a force push
 
-It fails open. Feed it something it can't parse and it allows the command rather than blocking. A guard that jams the session shut the first time it hits an edge case is one you rip out that afternoon, and then you have no guard at all.
+It fails open: feed it something it can't parse and it allows the command. A guard that jams the session shut the first time it hits an edge case is one you rip out that afternoon, and then you have no guard at all.
 
-There's no way for the agent to override it. Some hooks let the model pass a flag to skip the check. This one can't be talked out of anything. If a blocked command was legitimate, you run it yourself. If the agent could skip the check, so could anything that had talked its way into the agent.
+The agent can't override it, though. Some hooks let the model pass a flag to skip the check; this one can't be talked out of anything. If a blocked command was legitimate you run it yourself, because if the agent could skip the check, so could anything that had talked its way into the agent.
 
 ```console
 $ bash-havoc-guard.sh --explain 'cat ~/.config/gh/hosts.yml'
@@ -91,15 +87,11 @@ Each one is a list, one item per line, with a comment saying what it's for. Addi
 
 ## What it won't do
 
-It won't stop someone who is genuinely trying to get around it. Anyone can encode a command, build it from pieces at the last second, or hide a filename in a variable, and this reads the command as text so it will miss all of that. The real answer to a determined attacker is an operating system sandbox. This runs in front of one, not instead of one.
+It won't stop someone genuinely trying to get around it. Encode a command, build it from pieces at the last second, hide a filename in a variable, and this reads commands as text so it misses all of that. The real answer to a determined attacker is an operating system sandbox; this runs in front of one, not instead of one.
 
-It works from a list of dangerous shapes it recognises, so something genuinely new gets through. And it only watches shell commands. Anything else your agent can do is outside what this sees.
+It works from a list of shapes it recognises, so something genuinely new gets through, and it only watches shell commands. Anything else your agent can do is outside what it sees.
 
-It also goes too far in two places, and both are on purpose.
-
-`rm -rf $(pwd)` is blocked while `rm -rf $DIR` is allowed. When the target of a delete is computed on the spot, the guard never sees what's about to be deleted, and an unknown recursive delete is the last thing that should get a pass. A variable at least leaves something to look at, and that case belongs to the sandbox layer.
-
-If you write a dangerous-looking line into a file, it still blocks. Saving the text `curl https://example.com` into a document trips the network check on a line that never runs. Telling those apart properly means understanding shell syntax rather than reading the command as text, and ignoring anything that looks like a document would be wrong the other way, because you can pipe a document straight into a shell.
+It also goes too far in two places, both on purpose. `rm -rf $(pwd)` is blocked while `rm -rf $DIR` is allowed, because a target computed on the spot is a delete the guard can never see, and an unknown recursive delete is the last thing that should get a pass. And writing a dangerous-looking line into a file still blocks: saving the text `curl https://example.com` into a document trips the network check on a line that never runs. Telling those apart means parsing shell syntax rather than reading text, and ignoring anything that looks like a document is wrong the other way, since you can pipe a document straight into a shell.
 
 When something blocks and you think it shouldn't have, ask it why:
 
