@@ -2,9 +2,7 @@
 
 [![test](https://github.com/justin-rhee/bash-havoc-guard/actions/workflows/test.yml/badge.svg)](https://github.com/justin-rhee/bash-havoc-guard/actions/workflows/test.yml)
 
-My agent could print my GitHub token with one command and publish any file on my machine with one more.
-
-The guard I'd already written stopped neither. I found out by aiming a second agent at it with instructions to break through, and it did, twice, both times with commands I'd never thought to watch.
+The guard I'd written lasted two commands. One printed my GitHub token, the other published a file off my machine to a public web page, and I found out by pointing a second agent at it and telling it to get through. It did, twice, both times with commands I'd never thought to watch. If you let an agent run shell commands, you have this too, whether or not anything has gone wrong yet.
 
 This hook is what survived that review. It reads every shell command your AI agent is about to run and stops the dangerous ones.
 
@@ -87,7 +85,7 @@ Each one is a list, one item per line, with a comment saying what it's for. Addi
 
 ## What it won't do
 
-It won't stop someone genuinely trying to get around it. Encode a command, build it from pieces at the last second, hide a filename in a variable, and this reads commands as text so it misses all of that. The real answer to a determined attacker is an operating system sandbox; this runs in front of one, not instead of one.
+It won't stop someone genuinely trying to get around it. Encode a command, build it from pieces at the last second, hide a filename in a variable, and this reads commands as text so it misses all of that. The real answer to a determined attacker is an operating system sandbox; this runs in front of one, not instead of one
 
 It works from a list of shapes it recognises, so something genuinely new gets through, and it only watches shell commands. Anything else your agent can do is outside what it sees.
 
@@ -122,4 +120,4 @@ MIT. See [LICENSE](LICENSE). No warranty. Security notes and how to report a pro
 
 ---
 
-One of a set of small tools I've pulled out of a bigger system I run, where agents write the code and plain scripts decide when it's actually done. They all share one rule: the machine suggests, a person decides, and nothing quietly goes wrong behind your back. More of them on my [GitHub profile](https://github.com/justin-rhee).
+One of a set of small tools I've pulled out of a bigger system I run, where agents write the code and plain scripts decide when it's actually done. I keep the final call for myself, and I'd rather a check be annoying than silent. More of them on my [GitHub profile](https://github.com/justin-rhee).
