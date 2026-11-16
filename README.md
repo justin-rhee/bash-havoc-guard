@@ -1,24 +1,8 @@
 # bash-havoc-guard
 
-One shell hook for agents that run commands: **block a command that would dump a credential file's contents**, **block network commands pointed anywhere but your own machine or network**, and **block destructive commands such as recursive deletes outside allowed folders, raw disk writes, disk wipes, `git clean` and force pushes**. About 420 lines of shell, roughly half comments explaining why each rule exists, and it needs `jq`.
+[![tests](https://github.com/justin-rhee/bash-havoc-guard/actions/workflows/test.yml/badge.svg)](https://github.com/justin-rhee/bash-havoc-guard/actions/workflows/test.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![shell](https://img.shields.io/badge/shell-bash-blue.svg) ![needs jq](https://img.shields.io/badge/needs-jq-lightgrey.svg)
 
-The guard I had written before it lasted two commands: one printed my GitHub token, the other published a file off my machine to a public web page, and I found out by pointing a second agent at it and telling it to get through. It did, twice, both times with commands I had never thought to watch. If you let an agent run shell commands, you have this too, whether or not anything has gone wrong yet. This hook is what survived that review.
-
-## Use it if
-
-- you run a Claude Code agent that executes shell commands, especially unattended or in a loop
-- you want a cheap guardrail against it reading a secret, shipping data off the machine, or running something destructive
-- you want it to sit in front of an OS sandbox, not instead of one
-
-## How it works
-
-Claude Code can run a script before each command and let it veto. This is that script: it gets the command as text and either stays quiet or refuses with a reason. Three checks.
-
-- reading secrets: blocks a command that would dump the contents of a credential file, and still lets you list the folder, check the size, or take a fingerprint without ever printing what's inside
-- sending things out: blocks a network command unless it's pointed somewhere on your own machine or network, leaving ordinary `git` and `gh` alone except the handful of commands that publish a file or create a new place to publish to
-- destroying things: blocks a recursive delete outside the folders you've said are fine, anything that writes straight to a disk, a disk wipe, `git clean`, and a force push
-
-It fails open: feed it something it can't parse and it allows the command, because a guard that jams the session shut the first time it hits an edge case is one you rip out that afternoon, and then you have no guard at all. The agent cannot override it, though; some hooks let the model pass a flag to skip the check, and this one cannot be talked out of anything. If a blocked command was legitimate you run it yourself, because if the agent could skip the check, so could anything that had talked its way into the agent.
+Stops a Claude Code agent from printing your secrets, sending data off your machine, or running destructive commands.
 
 ```console
 $ bash-havoc-guard.sh --explain 'cat ~/.config/gh/hosts.yml'
@@ -31,9 +15,17 @@ $ bash-havoc-guard.sh --explain 'curl http://localhost:3000/health'
 allowed
 ```
 
+The guard I wrote before this one lasted two commands. One printed my GitHub token, the other published a file to a public web page, and I only found out by telling a second agent to get through it. If you let an agent run shell commands, you have this too, whether or not anything has gone wrong yet.
+
+## Use it if
+
+- you run a Claude Code agent that executes shell commands, especially unattended or in a loop
+- you want a cheap guardrail against reading a secret, shipping data out, or something destructive
+- you want it in front of an OS sandbox, not instead of one
+
 ## Install
 
-You need `jq`. Copy the script somewhere it can live, make it runnable, and tell Claude Code to call it before each command:
+It needs `jq`. Copy the script, make it runnable, and register it as a hook:
 
 ```console
 $ cp src/bash-havoc-guard.sh ~/.claude/hooks/
@@ -50,50 +42,43 @@ $ chmod +x ~/.claude/hooks/bash-havoc-guard.sh
 }
 ```
 
-Start a new session for that to take effect. The first refusal you see is your confirmation it's working; if you'd rather not wait, ask your agent to run `rm -rf ../..` and watch it decline.
+Start a new session for it to take effect, then ask your agent to run `rm -rf ../..` and watch it decline. Before relying on it, run `--explain` on commands you use every day, and adjust the five settings marked `# EDIT` in the script if it blocks one (allowed delete folders first).
 
-Run it against commands you actually use first, with nothing installed and nothing changed. If it stops something you need every day, change a setting now rather than finding out mid-task:
+## How it works
 
-```console
-$ bash src/bash-havoc-guard.sh --explain 'rm -rf ./dist'
-allowed
-```
+Claude Code runs it before each command and lets it veto, with three checks:
 
-Five settings are marked `# EDIT` in the script: allowed folders for recursive delete, credential files particular to your setup, filename words suggesting a secret, commands that count as reading contents, and addresses that count as local. Each is a list, one item per line, with a comment saying what it's for; the first is the one most people need to change.
+- reading secrets: blocks dumping a credential file's contents, while still letting you list the folder, check a size or take a fingerprint
+- sending things out: blocks a network command unless it points at your own machine or network, leaving ordinary `git` and `gh` alone except the few commands that publish
+- destroying things: blocks recursive deletes outside allowed folders, raw disk writes, disk wipes, `git clean` and force pushes
+
+It fails open on input it can't parse, because a guard that jams the session gets ripped out that afternoon. The agent can't talk its way past it: there's no flag to skip the check, so a legitimate blocked command is one you run yourself.
 
 ## What it won't do
 
-It won't stop someone genuinely trying to get around it. Encode a command, build it from pieces at the last second, hide a filename in a variable, and this reads commands as text so it misses all of that. The real answer to a determined attacker is an operating system sandbox; this runs in front of one, not instead of one.
+It won't stop someone determined. An encoded command, one built from pieces at the last second, or a filename hidden in a variable all get past a check that reads commands as text. An OS sandbox is the real answer; this runs in front of one.
 
-It works from a list of shapes it recognises, so something genuinely new gets through, and it only watches shell commands. Anything else your agent can do is outside what it sees.
+It works from shapes it recognizes, so something new gets through, and it only watches shell commands.
 
-It also goes too far in two places, both on purpose. `rm -rf $(pwd)` is blocked while `rm -rf $DIR` is allowed, because a target computed on the spot is a delete the guard can never see, and an unknown recursive delete is the last thing that should get a pass. And writing a dangerous-looking line into a file still blocks: saving the text `curl https://example.com` into a document trips the network check on a line that never runs. Telling those apart means parsing shell syntax rather than reading text, and ignoring anything that looks like a document is wrong the other way, since you can pipe a document straight into a shell.
+It goes too far in two places, on purpose. `rm -rf $(pwd)` is blocked while `rm -rf $DIR` is allowed, because a target computed on the spot is a delete it can never see. And writing a dangerous-looking line into a file still blocks, since telling the two apart means parsing shell rather than reading text. `--explain` names the check that fired; if what it objected to is text inside a document, it's a false alarm, and running it yourself is the intended path.
 
-When something blocks and you think it shouldn't have, ask it why; it names the check that fired and the exact thing it objected to. If that thing is a word inside a message or a document rather than something the command would touch, it's a false alarm, and running it yourself outside the agent is the intended path:
-
-```console
-$ bash-havoc-guard.sh --explain 'cat > notes.md <<EOF
-curl https://example.com
-EOF'
-BLOCKED [egress]: network command without a local-only destination: curl https://example.com
-```
-
-## Platforms
-
-macOS and Linux today, Windows on the way.
+Windows isn't supported yet.
 
 ## How I tested it
 
-The suite runs offline, no accounts, no keys, no network:
-
-```
-bash tests/test-bash-havoc-guard.sh
-```
-
-130 cases. It hands the hook made-up commands and checks that the safe ones pass and the dangerous ones don't, including the awkward ones: taking a fingerprint of a secret file, counting matches in it without printing them, a folder named for tokens that holds no secrets at all. Most of those cases exist because something got through; the reasoning behind each rule, and the story of what it missed, is in [docs/ADR.md](docs/ADR.md).
+- 130 offline cases: `bash tests/test-bash-havoc-guard.sh`
+- includes the awkward ones: fingerprinting a secret file, counting matches without printing them, a folder named for tokens that holds none
+- most cases exist because something got through once; the story behind each rule is in [docs/ADR.md](docs/ADR.md)
 
 ## License
 
 MIT. See [LICENSE](LICENSE). No warranty. Security notes and how to report a problem: [SECURITY.md](SECURITY.md).
 
-This little tool is one of a handful I pulled out of my own day-to-day agent setup. I use them all myself, so when something breaks I usually notice fast. If you spot anything off, open an issue. I read every one. More tools on my [GitHub profile](https://github.com/justin-rhee).
+<!-- related:start -->
+## Related
+
+- [path-fence](https://github.com/justin-rhee/path-fence): refuses credential-shaped file reads before they happen
+- [transcript-redactor](https://github.com/justin-rhee/transcript-redactor): keeps credentials out of agent transcripts
+
+Part of a small set of tools I pulled out of my own agent harness. I use them myself and read every issue. More on my [GitHub profile](https://github.com/justin-rhee).
+<!-- related:end -->
