@@ -192,6 +192,23 @@ is_cred_operand() {
   return 1
 }
 
+# An interpreter one-liner (`python3 -c '...'`, `node -e`, `perl -e`, `ruby -e`) reads a file
+# with no dumper at all, and its parentheses make the segment splitter cut the credential
+# path away from the interpreter: `python3 -c 'open("/Users/x/.ssh/id_rsa").read()'` used to
+# pass. So the quoted code argument is checked whole, before any splitting, and only against
+# CRED_HARD (real credential stores). The filename-word heuristic stays out of it, so
+# `node -e 'require("./src/tokens.json")'` is still fine. Only the quoted code itself is
+# examined, so a later command in the same line (`python3 -c 'print(1)'; ls ~/.ssh`) is not
+# blamed on the interpreter. A script file, a heredoc, or a path built from pieces is not
+# visible here; that is a stated limit, and it is the OS sandbox's job.
+INTERP_ONELINER='(^|[^[:alnum:]_./-])(python[0-9.]*|nodejs|node|perl|ruby|php|deno|bun)[[:space:]]+([^|;&]*[[:space:]])?-(c|e|r|E|p|-eval|-print)[[:space:]]*('"'"'[^'"'"']*'"'"'|"([^"\\]|\\.)*")'
+while IFS= read -r code; do
+  [ -n "$code" ] || continue
+  if grep -Eqi "$CRED_HARD" <<<"$code"; then
+    deny "secrets" "interpreter one-liner names a credential path: ${code:0:120}"
+  fi
+done < <(grep -oE "$INTERP_ONELINER" <<<"$STRIPPED")
+
 # gh is authenticated, so `gh gist create <secret>` is a one-command exfil primitive
 # that no cred-path filter would see; it is handled in the EGRESS lock below.
 # EDIT: anything that can put a file's CONTENT somewhere. Safe inspection (ls, wc,
