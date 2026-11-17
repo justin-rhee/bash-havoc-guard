@@ -215,5 +215,19 @@ block "cred path before other flags"      "tar czf out.tgz secrets.pem --exclude
 block "env file then a pipe"              "cat .env | grep -v PASSWORD"
 allow "a source file then a pipe"         "cat src/tokens.json | jq ."
 
+echo "== interpreter one-liners that name a credential path =="
+block "python -c open() on an ssh key"    "python3 -c 'open(\"/Users/x/.ssh/id_rsa\").read()'"
+block "node -e readFileSync on aws creds" "node -e 'require(\"fs\").readFileSync(\"/Users/x/.aws/credentials\")'"
+block "perl -e open on an ssh key"        "perl -e 'open F,\"/Users/x/.ssh/id_rsa\"'"
+block "ruby -e File.read on an ssh key"   "ruby -e 'File.read(\"/Users/x/.ssh/id_rsa\")'"
+block "python -c with a relative path"    "python3 -c 'print(open(\".ssh/id_rsa\").read())'"
+block "python -c, double-quoted code"     "python3 -c \"print(open('/Users/x/.config/gh/hosts.yml').read())\""
+block "python -c after other statements"  "python3 -c 'import os; print(open(\"/Users/x/.ssh/id_rsa\").read())'"
+allow "python -c with no credential path" "python3 -c 'print(1 + 1)'"
+allow "node -e with no credential path"   "node -e 'console.log(process.version)'"
+allow "python script run by name"         "python3 scripts/build.py"
+allow "python -c, cred path in a later command" "python3 -c 'print(1)'; ls ~/.ssh"
+allow "node -e, source file with token in name" "node -e 'require(\"./src/tokens.json\")'"
+
 echo "test-bash-havoc-guard: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

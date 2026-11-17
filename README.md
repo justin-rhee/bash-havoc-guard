@@ -60,13 +60,15 @@ It won't stop someone determined. An encoded command, one built from pieces at t
 
 It works from shapes it recognizes, so something new gets through, and it only watches shell commands.
 
+It blocks the obvious interpreter one-liner, like `python3 -c 'open("/Users/x/.ssh/id_rsa").read()'`, when the quoted code names a credential store. That is all it can see. A script file, a heredoc, or a path built from pieces (`"id_" + "rsa"` with no `.ssh` beside it) gets past, because any program can read a file without a command line that says so.
+
 It goes too far in two places, on purpose. `rm -rf $(pwd)` is blocked while `rm -rf $DIR` is allowed, because a target computed on the spot is a delete it can never see. And writing a dangerous-looking line into a file still blocks, since telling the two apart means parsing shell rather than reading text. `--explain` names the check that fired; if what it objected to is text inside a document, it's a false alarm, and running it yourself is the intended path.
 
 Windows isn't supported yet.
 
 ## How I tested it
 
-- 130 offline cases: `bash tests/test-bash-havoc-guard.sh`
+- 142 offline cases: `bash tests/test-bash-havoc-guard.sh`
 - includes the awkward ones: fingerprinting a secret file, counting matches without printing them, a folder named for tokens that holds none
 - most cases exist because something got through once; the story behind each rule is in [docs/ADR.md](docs/ADR.md)
 
